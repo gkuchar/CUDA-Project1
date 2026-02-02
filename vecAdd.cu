@@ -34,10 +34,29 @@
  */
 
 #include <stdio.h>
+#include <time.h>
+#include <stdlib.h>
 
 // For the CUDA runtime routines (prefixed with "cuda_")
 #include <cuda_runtime.h>
 #include <helper_cuda.h>
+
+// GLOBAL VARIABLES
+// Error code to check return values for CUDA calls
+cudaError_t err = cudaSuccess;
+
+// Timing metrics
+cudaEvent_t start, stop;
+
+// Print the vector length to be used, and compute its size
+int    numElements = 50000;
+size_t size        = numElements * sizeof(float);
+
+// Total running times across n executions to compute average.
+float htdTotal = 0;
+float kernExecTotal = 0;
+float dthTotal = 0;
+
 /**
  * CUDA Kernel Device code
  *
@@ -53,19 +72,7 @@ __global__ void vectorAdd(const float *A, const float *B, float *C, int numEleme
     }
 }
 
-/**
- * Host main routine
- */
-int main(void)
-{
-    // Error code to check return values for CUDA calls
-    cudaError_t err = cudaSuccess;
-
-    // Print the vector length to be used, and compute its size
-    int    numElements = 50000;
-    size_t size        = numElements * sizeof(float);
-    printf("[Vector addition of %d elements]\n", numElements);
-
+void vecAddProcess() {
     // Allocate the host input vector A
     float *h_A = (float *)malloc(size);
 
@@ -117,7 +124,11 @@ int main(void)
     // Copy the host input vectors A and B in host memory to the device input
     // vectors in
     // device memory
+
     printf("Copy input data from the host memory to the CUDA device\n");
+
+    // Record start time for copying memory from host to device
+    cudaEventRecord(start);
     err = cudaMemcpy(d_A, h_A, size, cudaMemcpyHostToDevice);
 
     if (err != cudaSuccess) {
@@ -132,10 +143,26 @@ int main(void)
         exit(EXIT_FAILURE);
     }
 
+    // Record stop time for copying memory from host to device
+    cudaEventRecord(stop);
+    // Synchronize
+    cudaEventSynchronize(stop);
+
+    // Save running time
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+
+    // Add running time to Host-to-Device total time
+    htdTotal += milliseconds;
+
     // Launch the Vector Add CUDA Kernel
     int threadsPerBlock = 256;
     int blocksPerGrid   = (numElements + threadsPerBlock - 1) / threadsPerBlock;
     printf("CUDA kernel launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
+
+    // Record start time for kernal execution
+    cudaEventRecord(start);
+
     vectorAdd<<<blocksPerGrid, threadsPerBlock>>>(d_A, d_B, d_C, numElements);
     err = cudaGetLastError();
 
@@ -144,15 +171,44 @@ int main(void)
         exit(EXIT_FAILURE);
     }
 
+    // Record stop time for kernal execution
+    cudaEventRecord(stop);
+    // Synchronize
+    cudaEventSynchronize(stop);
+
+    // Save running time
+    milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+
+    // Add running time to kernal execution total time
+    kernExecTotal += milliseconds;
+
     // Copy the device result vector in device memory to the host result vector
     // in host memory.
+
     printf("Copy output data from the CUDA device to the host memory\n");
+
+    // Record start time for copying memory from device to host
+    cudaEventRecord(start);
+
     err = cudaMemcpy(h_C, d_C, size, cudaMemcpyDeviceToHost);
 
     if (err != cudaSuccess) {
         fprintf(stderr, "Failed to copy vector C from device to host (error code %s)!\n", cudaGetErrorString(err));
         exit(EXIT_FAILURE);
     }
+
+    // Record stop time for copying memory from device to host
+    cudaEventRecord(stop);
+    // Synchronize
+    cudaEventSynchronize(stop);
+
+    // Save running time
+    milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+
+    // Add running time to Device-to-Host total time
+    dthTotal += milliseconds;
 
     // Verify that the result vector is correct
     for (int i = 0; i < numElements; ++i) {
@@ -190,7 +246,46 @@ int main(void)
     free(h_A);
     free(h_B);
     free(h_C);
+}
 
-    printf("Done\n");
+/**
+ * Host main routine (modified for n iterations)
+ */
+int main(void) {
+
+    // Generate number of iterations
+    srand(time(NULL));
+    int n = (rand() % 16) + 10;
+
+    printf("\n[[[Vector addition of %d elements, %d iterations]]]\n\n", numElements, n);
+
+    // Create events once
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    // Warm-up run
+    vecAddProcess();
+
+    // Reset totals after warm-up
+    htdTotal = 0;
+    kernExecTotal = 0;
+    dthTotal = 0;
+
+    int i;
+    for (i = 0; i < n; i++) {
+        printf("START: iteration (%d/%d)\n", i + 1, n);
+        vecAddProcess();
+        printf("END: iteration (%d/%d)\n", i + 1, n);
+    }
+
+    // Cleanup
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
+    printf("\nThe average host-to-device copy time: %f\n", htdTotal / n);
+    printf("The average kernel execution time: %f\n", kernExecTotal / n);
+    printf("The average device-to-host copy time: %f\n", dthTotal / n);
+    printf("The number of runs used to compute the averages: %d\n", n);
+
     return 0;
 }
